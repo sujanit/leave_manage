@@ -8,7 +8,8 @@ const path = require("path");
 
 const app = express();
 
-const PORT = Number(process.env.PORT) || 5000;
+// Configuration
+const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 // Middleware
@@ -16,13 +17,10 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// Check MongoDB URI
-if (!MONGODB_URI) {
-  console.error("ERROR: MONGODB_URI is missing in .env file");
-  process.exit(1);
-}
+// ===============================
+// USER SCHEMA
+// ===============================
 
-// User Schema
 const userSchema = new mongoose.Schema(
   {
     username: {
@@ -59,39 +57,51 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Leave Schema
-const leaveSchema = new mongoose.Schema({
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true
-  },
-  leaveType: {
-    type: String,
-    enum: ["Casual", "Medical"],
-    required: true
-  },
-  days: {
-    type: Number,
-    required: true,
-    min: 1
-  },
-  status: {
-    type: String,
-    enum: ["Applied", "Approved", "Rejected"],
-    default: "Applied"
-  },
-  appliedAt: {
-    type: Date,
-    default: Date.now
-  }
-});
+// ===============================
+// LEAVE SCHEMA
+// ===============================
 
-// Models
+const leaveSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true
+    },
+    leaveType: {
+      type: String,
+      enum: ["Casual", "Medical"],
+      required: true
+    },
+    days: {
+      type: Number,
+      required: true,
+      min: 1
+    },
+    status: {
+      type: String,
+      enum: ["Applied", "Approved", "Rejected"],
+      default: "Applied"
+    },
+    appliedAt: {
+      type: Date,
+      default: Date.now
+    }
+  },
+  { timestamps: true }
+);
+
+// ===============================
+// MODELS
+// ===============================
+
 const User = mongoose.model("User", userSchema);
 const Leave = mongoose.model("Leave", leaveSchema);
 
-// Home Route
+// ===============================
+// HOME ROUTE
+// ===============================
+
 app.get("/", (req, res) => {
   res.json({
     message: "Leave Management API is running!",
@@ -102,7 +112,10 @@ app.get("/", (req, res) => {
   });
 });
 
-// Database Status
+// ===============================
+// DATABASE STATUS
+// ===============================
+
 app.get("/db-status", (req, res) => {
   const connected = mongoose.connection.readyState === 1;
 
@@ -113,7 +126,10 @@ app.get("/db-status", (req, res) => {
   });
 });
 
-// Register User
+// ===============================
+// REGISTER USER
+// ===============================
+
 app.post("/api/users/register", async (req, res) => {
   try {
     const {
@@ -130,8 +146,8 @@ app.post("/api/users/register", async (req, res) => {
       });
     }
 
-    const casual = Number(casualLeave);
-    const medical = Number(medicalLeave);
+    const casual = Number(casualLeave ?? 0);
+    const medical = Number(medicalLeave ?? 0);
 
     if (
       !Number.isInteger(casual) ||
@@ -164,6 +180,8 @@ app.post("/api/users/register", async (req, res) => {
       });
     }
 
+    console.error("Registration Error:", error.message);
+
     res.status(500).json({
       message: "Could not register user.",
       error: error.message
@@ -171,7 +189,10 @@ app.post("/api/users/register", async (req, res) => {
   }
 });
 
-// Login User
+// ===============================
+// LOGIN USER
+// ===============================
+
 app.post("/api/users/login", async (req, res) => {
   try {
     const { email, rollNumber } = req.body;
@@ -183,7 +204,7 @@ app.post("/api/users/login", async (req, res) => {
     }
 
     const user = await User.findOne({
-      email: email.toLowerCase().trim(),
+      email: String(email).toLowerCase().trim(),
       rollNumber: String(rollNumber).trim()
     });
 
@@ -199,6 +220,8 @@ app.post("/api/users/login", async (req, res) => {
     });
 
   } catch (error) {
+    console.error("Login Error:", error.message);
+
     res.status(500).json({
       message: "Could not log in.",
       error: error.message
@@ -206,7 +229,10 @@ app.post("/api/users/login", async (req, res) => {
   }
 });
 
-// Get User
+// ===============================
+// GET USER DETAILS
+// ===============================
+
 app.get("/api/users/:id", async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -226,13 +252,18 @@ app.get("/api/users/:id", async (req, res) => {
     res.json({ user });
 
   } catch (error) {
+    console.error("Get User Error:", error.message);
+
     res.status(500).json({
       message: "Could not fetch user."
     });
   }
 });
 
-// Apply Leave
+// ===============================
+// APPLY FOR LEAVE
+// ===============================
+
 app.post("/api/leaves", async (req, res) => {
   try {
     const { userId, leaveType, days } = req.body;
@@ -249,39 +280,61 @@ app.post("/api/leaves", async (req, res) => {
       });
     }
 
-    const user = await User.findById(userId);
-
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found. Please log in again."
-      });
-    }
-
     const field =
       leaveType === "Casual" ? "casualLeave" : "medicalLeave";
 
-    if (user[field] < numberOfDays) {
+    // Atomically check and deduct leave balance
+    const user = await User.findOneAndUpdate(
+      {
+        _id: userId,
+        [field]: { $gte: numberOfDays }
+      },
+      {
+        $inc: { [field]: -numberOfDays }
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!user) {
+      const existingUser = await User.findById(userId);
+
+      if (!existingUser) {
+        return res.status(404).json({
+          message: "User not found. Please log in again."
+        });
+      }
+
       return res.status(400).json({
         message: `Not enough ${leaveType.toLowerCase()} leave balance.`
       });
     }
 
-    user[field] -= numberOfDays;
-    await user.save();
+    try {
+      const leave = await Leave.create({
+        userId,
+        leaveType,
+        days: numberOfDays
+      });
 
-    const leave = await Leave.create({
-      userId,
-      leaveType,
-      days: numberOfDays
-    });
+      res.status(201).json({
+        message: "Leave application submitted.",
+        user,
+        leave
+      });
 
-    res.status(201).json({
-      message: "Leave application submitted.",
-      user,
-      leave
-    });
+    } catch (error) {
+      // Restore balance if leave creation fails
+      await User.updateOne(
+        { _id: userId },
+        { $inc: { [field]: numberOfDays } }
+      );
+
+      throw error;
+    }
 
   } catch (error) {
+    console.error("Apply Leave Error:", error.message);
+
     res.status(500).json({
       message: "Could not apply for leave.",
       error: error.message
@@ -289,7 +342,10 @@ app.post("/api/leaves", async (req, res) => {
   }
 });
 
-// Get Leave History
+// ===============================
+// GET LEAVE HISTORY
+// ===============================
+
 app.get("/api/leaves/:userId", async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.userId)) {
@@ -305,20 +361,28 @@ app.get("/api/leaves/:userId", async (req, res) => {
     res.json({ leaves });
 
   } catch (error) {
+    console.error("Leave History Error:", error.message);
+
     res.status(500).json({
       message: "Could not load leave history."
     });
   }
 });
 
-// Frontend fallback
+// ===============================
+// FRONTEND FALLBACK
+// ===============================
+
 app.use((req, res, next) => {
-  if (req.method === "GET" && !req.path.startsWith("/api/") &&
-      req.path !== "/db-status") {
+  if (
+    req.method === "GET" &&
+    !req.path.startsWith("/api/") &&
+    req.path !== "/db-status"
+  ) {
     return res.sendFile(
       path.join(__dirname, "public", "index.html"),
-      (err) => {
-        if (err) next(err);
+      (error) => {
+        if (error) next(error);
       }
     );
   }
@@ -326,37 +390,49 @@ app.use((req, res, next) => {
   next();
 });
 
-// MongoDB Atlas Connection
-async function startServer(port = PORT) {
+// ===============================
+// MONGODB ATLAS CONNECTION
+// ===============================
+
+async function startServer() {
   try {
-    await mongoose.connect(MONGODB_URI);
+    if (!MONGODB_URI) {
+      throw new Error(
+        "MONGODB_URI is missing. Please check your .env file or Render environment variables."
+      );
+    }
 
-    console.log("--------------------------------");
-    console.log("MongoDB Atlas Connected Successfully");
-    console.log("Database:", mongoose.connection.name);
-    console.log("--------------------------------");
+    console.log("Connecting to MongoDB Atlas...");
 
-    const server = app.listen(port, () => {
-      console.log(`Server running on port ${port}`);
-      console.log(`API: http://localhost:${port}`);
-      console.log(`DB Status: http://localhost:${port}/db-status`);
+    await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000
     });
 
-    server.on("error", (error) => {
-      if (error.code === "EADDRINUSE") {
-        const fallbackPort = port + 1;
-        console.warn(`Port ${port} is already in use. Retrying on port ${fallbackPort}...`);
-        return startServer(fallbackPort);
-      }
+    console.log("================================");
+    console.log("MongoDB Atlas Connected Successfully!");
+    console.log("Database:", mongoose.connection.name);
+    console.log("Host:", mongoose.connection.host);
+    console.log("================================");
 
-      console.error("Server failed to start:", error.message);
-      process.exit(1);
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Port: ${PORT}`);
     });
 
   } catch (error) {
-    console.error("MongoDB Atlas Connection Failed:", error.message);
+    console.error("================================");
+    console.error("MongoDB Connection Failed!");
+    console.error("Error:", error.message);
+    console.error("================================");
+
     process.exit(1);
   }
 }
 
+// Handle MongoDB connection errors
+mongoose.connection.on("error", (error) => {
+  console.error("MongoDB Error:", error.message);
+});
+
+// Start application
 startServer();
