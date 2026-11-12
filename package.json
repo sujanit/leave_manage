@@ -1,0 +1,14 @@
+{
+  "name": "leave-management-system",
+  "version": "1.0.0",
+  "description": "Simple Leave Management System using Node.js, Express and MongoDB",
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "dev": "nodemon server.js" },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "mongoose": "^8.9.5"
+  },
+  "devDependencies": { "nodemon": "^3.1.9" }
+}
